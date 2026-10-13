@@ -1,0 +1,10 @@
+# Secrets et fichiers locaux : ne jamais commiter
+.env
+*.pem
+secrets/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/

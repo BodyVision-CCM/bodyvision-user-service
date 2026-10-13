@@ -1,0 +1,6 @@
+# Les scripts shell et les Dockerfile DOIVENT rester en fins de ligne Unix (LF) : un checkout Git sous
+# Windows les convertirait en CRLF et le conteneur échouerait avec « sh: not found » ou « ^M ».
+*.sh         text eol=lf
+Dockerfile   text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf

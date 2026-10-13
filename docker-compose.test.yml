@@ -1,0 +1,47 @@
+# =============================================================================
+# Tests du service Auth, AUTONOMES : ce dépôt n'a pas besoin du dépôt infra-compose pour être testé
+# (c'est ce qui permet de les lancer à l'identique en CI, ex. Cloud Build).
+#
+#   make test
+#
+# PostgreSQL est JETABLE : données en mémoire (tmpfs), aucun port publié, détruit à la fin.
+# Les identifiants ci-dessous sont FACTICES et réservés à ce test : ne les réutilisez jamais ailleurs.
+# Le rôle et le schéma sont recréés par docker/test-db-init.sql, comme le fait le dépôt infra-compose
+# (source de vérité pour l'instance partagée : infra-compose/postgres/init/).
+# =============================================================================
+
+name: auth-tests
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: bodyvision
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: test-only-superuser-password
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes:
+      - ./docker/test-db-init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      # En TCP (-h 127.0.0.1) : pendant l'init, l'image démarre un serveur temporaire sur socket Unix
+      # seulement ; tester en TCP évite de déclarer « prêt » avant la fin du script d'init.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d bodyvision"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+
+  tests:
+    build:
+      context: .
+      target: test
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: bodyvision
+      DB_USER: bv_utilisateurs
+      DB_PASSWORD: test-only-service-password
