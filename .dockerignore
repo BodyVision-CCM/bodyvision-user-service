@@ -1,0 +1,13 @@
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.git
+.env
+*.pem
+
+# Hors image de production : tests, compose de test, doc
+docker
+docker-compose*.yml
+Makefile
+README.md

@@ -1,0 +1,612 @@
+openapi: 3.0.3
+info:
+  title: BodyVision API
+  version: 0.3.0
+  description: |
+    Contrat API BodyVision
+
+    Principes
+    - Le mobile n'envoie JAMAIS de video : uniquement des landmarks (JSON), par SERIE,
+      en envoi differe (fin de serie / reseau disponible).
+    - Les landmarks bruts ne sont stockes dans aucune table (bucket 30 j). L'API de
+      lecture n'expose que des resultats : repetitions, mesures, courbes, anomalies, agregats.
+    - Ingestion asynchrone : 202 Accepted, traitement via RabbitMQ, resultat lu par polling.
+    - Idempotence : `batchId` (= traitement_lot.batch_id). Un rejeu ne cree aucun doublon.
+    - Conventions : proprietes en camelCase anglais ; valeurs d'enumeration = codes du
+      modele de donnees (GENOU, DESCENTE, SEMAINE...).
+    - Landmarks encodes en tableaux [x, y, z, v] (v0.3), 10 FPS vers le Cloud.
+    - Statistiques : uniquement sur les series filmees.
+servers:
+  - url: https://api.bodyvision.example/v1
+  - url: http://localhost:4010/v1
+    description: Mock Prism
+tags:
+  - { name: auth, description: Service Utilisateurs }
+  - { name: users, description: Service Utilisateurs }
+  - { name: exercises, description: Catalogue et seuils biomecaniques }
+  - { name: sessions, description: Service Analytique }
+  - { name: series, description: Ingestion et rapport de serie }
+  - { name: stats, description: Progression }
+  - { name: internal, description: "Appels service-a-service, non exposes par l'Ingress" }
+  - { name: ops }
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/register:
+    post:
+      tags: [auth]
+      security: []
+      summary: Creer un compte
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Credentials' }
+      responses:
+        '201':
+          description: Compte cree
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '409': { $ref: '#/components/responses/Error' }
+  /auth/login:
+    post:
+      tags: [auth]
+      security: []
+      summary: Se connecter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Credentials' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401': { $ref: '#/components/responses/Error' }
+  /auth/refresh:
+    post:
+      tags: [auth]
+      security: []
+      summary: Renouveler le token d'acces
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+  /users/me:
+    get:
+      tags: [users]
+      summary: Profil courant (ecran Profil)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserProfile' }
+    patch:
+      tags: [users]
+      summary: Mettre a jour le profil (morphologie, reglages)
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserProfile' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserProfile' }
+
+  /exercises:
+    get:
+      tags: [exercises]
+      summary: Catalogue d'exercices (ecran Choix de l'exercice)
+      parameters:
+        - { name: q, in: query, description: Recherche texte, schema: { type: string } }
+        - { name: category, in: query, description: Groupe musculaire, schema: { type: string } }
+        - { name: active, in: query, schema: { type: boolean, default: true } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Exercise' }
+  /exercises/{code}:
+    get:
+      tags: [exercises]
+      summary: Detail d'un exercice avec ses seuils biomecaniques
+      description: |
+        Les seuils vivent en base (seuil_biomecanique). Le mobile les telecharge et les
+        met en cache pour calculer l'alerte posturale HORS LIGNE. Utiliser ETag /
+        If-None-Match pour ne retelecharger qu'en cas de changement.
+      parameters:
+        - { $ref: '#/components/parameters/ExerciseCode' }
+      responses:
+        '200':
+          description: OK
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExerciseDetail' }
+        '304': { description: Inchange }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /sessions:
+    post:
+      tags: [sessions]
+      summary: Ouvrir une seance
+      description: Une seance peut contenir plusieurs exercices (l'exercice est porte par la serie).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SessionCreate' }
+      responses:
+        '201':
+          description: Seance creee
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+    get:
+      tags: [sessions]
+      summary: Lister mes seances (Accueil, bandeau "seance en cours")
+      description: Pour le bandeau, utiliser status=ACTIVE&limit=1.
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/SessionStatus' } }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Session' }
+                  nextCursor: { type: string, nullable: true }
+  /sessions/{sessionId}:
+    get:
+      tags: [sessions]
+      summary: Detail d'une seance
+      parameters:
+        - { $ref: '#/components/parameters/SessionId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '404': { $ref: '#/components/responses/Error' }
+  /sessions/{sessionId}/finish:
+    post:
+      tags: [sessions]
+      summary: Terminer la seance
+      parameters:
+        - { $ref: '#/components/parameters/SessionId' }
+      responses:
+        '200':
+          description: Seance terminee
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+
+  /sessions/{sessionId}/series:
+    post:
+      tags: [series]
+      summary: Envoyer une serie (lot de telemetrie, asynchrone)
+      description: |
+        Un appel = une serie complete (ex. 10 squats ~ 300 frames a 10 FPS, ~0,26 Mo avant gzip).
+        Le mobile sous-echantillonne a 10 images par seconde avant envoi : les 30 FPS
+        servent l'alerte locale calculee sur le telephone, pas l'historique Cloud.
+        Content-Encoding: gzip recommande. Le lot brut est depose sur le bucket
+        (retention 30 j) puis publie dans RabbitMQ. Reponse toujours 202 ;
+        l'idempotence est assuree cote traitement par `batchId` (traitement_lot) :
+        un rejeu est ignore. Suivre l'avancement via GET .../report.
+        A aligner avec le contrat de telemetrie SCRUM-23.
+      parameters:
+        - { $ref: '#/components/parameters/SessionId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SeriesUpload' }
+      responses:
+        '202':
+          description: Lot accepte et mis en file
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  batchId: { type: string, format: uuid }
+                  status: { $ref: '#/components/schemas/BatchStatus' }
+        '413': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '429':
+          description: Trop de requetes (respecter Retry-After)
+          headers:
+            Retry-After: { schema: { type: integer } }
+    get:
+      tags: [series]
+      summary: Series d'une seance
+      parameters:
+        - { $ref: '#/components/parameters/SessionId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SeriesSummary' }
+  /sessions/{sessionId}/series/{seriesId}/report:
+    get:
+      tags: [series]
+      summary: Rapport de serie (ecran Rapport de serie)
+      description: Tant que status != DONE, repetitions est vide => le mobile reinterroge (polling).
+      parameters:
+        - { $ref: '#/components/parameters/SessionId' }
+        - { $ref: '#/components/parameters/SeriesId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SeriesReport' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /stats/progress:
+    get:
+      tags: [stats]
+      summary: Progression (ecran Progression, lit agregat_progression)
+      parameters:
+        - { name: exercise, in: query, required: true, schema: { $ref: '#/components/schemas/ExerciseCode' } }
+        - { name: granularity, in: query, schema: { type: string, enum: [SEMAINE, MOIS], default: SEMAINE } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Progress' }
+  /stats/summary:
+    get:
+      tags: [stats]
+      summary: Chiffres cles (Accueil = semaine, Profil = global)
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Summary' }
+
+  /internal/users/{userId}/morphology:
+    get:
+      tags: [internal]
+      security: [{ serviceToken: [] }]
+      summary: Morphologie d'un utilisateur (Analytique -> Utilisateurs)
+      description: Sert a normaliser les angles. Pas de jointure entre schemas - appel d'API.
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Morphology' }
+
+  /healthz:
+    get:
+      tags: [ops]
+      security: []
+      summary: Liveness probe
+      responses:
+        '200': { description: OK }
+  /readyz:
+    get:
+      tags: [ops]
+      security: []
+      summary: Readiness probe (PostgreSQL + RabbitMQ joignables)
+      responses:
+        '200': { description: Pret }
+        '503': { description: Non pret }
+
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+    serviceToken: { type: http, scheme: bearer, description: Jeton service-a-service }
+  parameters:
+    SessionId: { name: sessionId, in: path, required: true, schema: { type: string, format: uuid } }
+    SeriesId: { name: seriesId, in: path, required: true, schema: { type: string, format: uuid } }
+    ExerciseCode: { name: code, in: path, required: true, schema: { $ref: '#/components/schemas/ExerciseCode' } }
+  responses:
+    Error:
+      description: Erreur
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: SERIES_NOT_FOUND }
+        message: { type: string }
+        traceId: { type: string }
+    Credentials:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password, minLength: 10 }
+    TokenPair:
+      type: object
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        expiresIn: { type: integer, example: 900 }
+    Morphology:
+      type: object
+      properties:
+        heightCm: { type: integer }
+        weightKg: { type: number }
+        level: { type: string, enum: [BEGINNER, INTERMEDIATE, ADVANCED] }
+    UserProfile:
+      allOf:
+        - { $ref: '#/components/schemas/Morphology' }
+        - type: object
+          properties:
+            id: { type: string, format: uuid, readOnly: true }
+            email: { type: string, format: email, readOnly: true }
+            displayName: { type: string }
+            settings:
+              type: object
+              description: |
+               Reglages d'analyse et d'envoi (a confirmer : serveur ou local au mobile)
+              properties:
+                analysisQuality: { type: string, example: 640x480@30 }
+                uploadMode: { type: string, enum: [WIFI_ONLY, ANY_NETWORK, MANUAL], default: WIFI_ONLY }
+    ExerciseCode:
+      type: string
+      pattern: '^[A-Z0-9_]+$'
+      example: SQUAT
+    Joint:
+      type: string
+      description: Articulation (extensible)
+      example: GENOU
+      enum: [GENOU, HANCHE, DOS, EPAULE, COUDE, CHEVILLE]
+    Phase:
+      type: string
+      enum: [DESCENTE, BAS, MONTEE]
+    Severity:
+      type: string
+      description: Valeurs a confirmer
+      enum: [INFO, WARNING, CRITICAL]
+    Exercise:
+      type: object
+      properties:
+        code: { $ref: '#/components/schemas/ExerciseCode' }
+        label: { type: string, example: Squat }
+        category: { type: string, example: JAMBES }
+        active: { type: boolean }
+        joints:
+          type: array
+          description: Articulations surveillees
+          items: { $ref: '#/components/schemas/Joint' }
+    Threshold:
+      type: object
+      properties:
+        id: { type: integer }
+        joint: { $ref: '#/components/schemas/Joint' }
+        phase: { $ref: '#/components/schemas/Phase' }
+        angleMin: { type: number }
+        angleMax: { type: number }
+        severity: { $ref: '#/components/schemas/Severity' }
+        message: { type: string }
+    ExerciseDetail:
+      allOf:
+        - { $ref: '#/components/schemas/Exercise' }
+        - type: object
+          properties:
+            thresholds:
+              type: array
+              items: { $ref: '#/components/schemas/Threshold' }
+    SessionStatus:
+      type: string
+      enum: [ACTIVE, COMPLETED]
+    SessionCreate:
+      type: object
+      properties:
+        contractVersion: { type: string, example: '1.0' }
+        model: { type: string, description: Modele de pose utilise, example: mlkit-pose }
+        device: { type: string, example: Honor 400 }
+    Session:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/SessionStatus' }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time, nullable: true }
+        contractVersion: { type: string }
+        model: { type: string }
+        device: { type: string }
+        exerciseCodes:
+          type: array
+          items: { $ref: '#/components/schemas/ExerciseCode' }
+        seriesCount: { type: integer }
+        anomalyCount: { type: integer }
+    Frame:
+      type: object
+      required: [t, lm]
+      properties:
+        t:
+          type: integer
+          description: Decalage en ms depuis startedAt. Strictement croissant.
+        lm:
+          type: array
+          description: >
+            Les 33 landmarks dans l'ordre des indices PoseLandmark de ML Kit (0 a 32),
+            l'ordre du tableau faisant foi. Chaque element est [x, y, z, v] :
+            x et y normalises par analysisWidth et analysisHeight (plage 0..1, peut
+            legerement sortir si un membre depasse du cadre), z normalise par
+            analysisWidth (profondeur relative, origine au centre des hanches),
+            v = indice de confiance 0..1. Trois decimales.
+          minItems: 33
+          maxItems: 33
+          items:
+            type: array
+            minItems: 4
+            maxItems: 4
+            items: { type: number }
+    SeriesUpload:
+      type: object
+      required: [batchId, index, exerciseCode, startedAt, endedAt, contractVersion, capture, frames]
+      properties:
+        batchId: { type: string, format: uuid, description: Cle d'idempotence (traitement_lot.batch_id) }
+        index: { type: integer, minimum: 0, description: Rang de la serie dans la seance }
+        exerciseCode: { $ref: '#/components/schemas/ExerciseCode' }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        contractVersion: { type: string, example: '1.0' }
+        capture:
+          type: object
+          required: [landmarkSet, model, analysisWidth, analysisHeight, nominalFps]
+          properties:
+            landmarkSet: { type: string, enum: [MLKIT_POSE_33] }
+            model: { type: string, enum: [BASE, ACCURATE] }
+            analysisWidth: { type: integer, example: 640 }
+            analysisHeight: { type: integer, example: 480 }
+            nominalFps: { type: integer, example: 10 }
+        frames:
+          type: array
+          maxItems: 900
+          items: { $ref: '#/components/schemas/Frame' }
+    BatchStatus:
+      type: string
+      description: Valeurs de traitement_lot.statut a confirmer
+      enum: [RECEIVED, PROCESSED, FAILED]
+    SeriesSummary:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        index: { type: integer }
+        exerciseCode: { $ref: '#/components/schemas/ExerciseCode' }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        repCount: { type: integer }
+        anomalyCount: { type: integer }
+        status: { $ref: '#/components/schemas/BatchStatus' }
+    Anomaly:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, example: DOS_ROND }
+        joint: { $ref: '#/components/schemas/Joint' }
+        measuredAngleDeg: { type: number }
+        deviationDeg: { type: number }
+        timestampMs: { type: integer, description: Instant dans la repetition }
+        severity: { $ref: '#/components/schemas/Severity' }
+        message: { type: string, description: Issu de seuil_biomecanique.message }
+    JointMeasure:
+      type: object
+      properties:
+        joint: { $ref: '#/components/schemas/Joint' }
+        angleMin: { type: number }
+        angleMax: { type: number }
+        angleMean: { type: number }
+        angleCurve:
+          type: array
+          description: Courbe sous-echantillonnee, exactement 30 points (JSONB), deja prete a tracer
+          minItems: 30
+          maxItems: 30
+          items: { type: number }
+    Repetition:
+      type: object
+      properties:
+        index: { type: integer }
+        startMs: { type: integer }
+        endMs: { type: integer }
+        maxAmplitudeDeg: { type: number }
+        descentMs: { type: integer }
+        ascentMs: { type: integer }
+        measures:
+          type: array
+          items: { $ref: '#/components/schemas/JointMeasure' }
+        anomalies:
+          type: array
+          items: { $ref: '#/components/schemas/Anomaly' }
+    SeriesReport:
+      type: object
+      properties:
+        seriesId: { type: string, format: uuid }
+        index: { type: integer }
+        exerciseCode: { $ref: '#/components/schemas/ExerciseCode' }
+        status: { $ref: '#/components/schemas/BatchStatus' }
+        repCount: { type: integer }
+        meanAmplitudeDeg: { type: number }
+        anomalyCount: { type: integer }
+        repetitions:
+          type: array
+          items: { $ref: '#/components/schemas/Repetition' }
+    ProgressPoint:
+      type: object
+      properties:
+        periodStart: { type: string, format: date }
+        sessionCount: { type: integer }
+        repCount: { type: integer }
+        meanAmplitudeDeg: { type: number }
+        anomalyCount: { type: integer }
+        anomalyRate: { type: number, minimum: 0, maximum: 1 }
+    Progress:
+      type: object
+      properties:
+        exercise: { $ref: '#/components/schemas/ExerciseCode' }
+        granularity: { type: string, enum: [SEMAINE, MOIS] }
+        scope:
+          type: string
+          enum: [FILMED_SERIES_ONLY]
+          description: Stats calculees uniquement sur les series filmees (a afficher a l'utilisateur)
+        mostFrequentAnomaly:
+          nullable: true
+          type: object
+          description: Absent de agregat_progression a ce jour (calcul ou colonne a ajouter)
+          properties:
+            type: { type: string }
+            joint: { $ref: '#/components/schemas/Joint' }
+            count: { type: integer }
+        points:
+          type: array
+          items: { $ref: '#/components/schemas/ProgressPoint' }
+    Summary:
+      type: object
+      properties:
+        sessionCount: { type: integer }
+        seriesCount: { type: integer }
+        repCount: { type: integer }
+        anomalyRate: { type: number }
+        scope: { type: string, enum: [FILMED_SERIES_ONLY] }
+
