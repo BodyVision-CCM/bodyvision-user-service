@@ -40,8 +40,6 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      # La fixture pytest migre après avoir défini la configuration de test.
-      RUN_MIGRATIONS: "false"
       DB_HOST: postgres
       DB_PORT: "5432"
       DB_NAME: bodyvision
