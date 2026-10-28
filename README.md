@@ -4,7 +4,7 @@ Comptes, authentification JWT, profil et morphologie. **FastAPI + PostgreSQL**, 
 il se teste, se construit et se déploie seul. Pour le lancer **avec les autres services**, voir le dépôt
 `infra-compose` (cloné à côté de celui-ci).
 
-Implémente les routes `auth`, `users` et `internal` du contrat OpenAPI v0.3.
+Implémente les routes `auth`, `users`, `internal`, ainsi que les sondes et le JWKS (hors `/v1`), du contrat OpenAPI v0.4.
 
 | Route | Rôle |
 |---|---|
@@ -32,12 +32,13 @@ Implémente les routes `auth`, `users` et `internal` du contrat OpenAPI v0.3.
 ## Tests
 
 ```bash
-make test    # 65 tests dans Docker, avec un PostgreSQL jetable (aucun port publié, données en mémoire)
+make test    # 70 tests dans Docker, avec un PostgreSQL jetable (aucun port publié, données en mémoire)
 ```
 
 Aucune dépendance au dépôt `infra-compose` : la même commande sert en CI. Les tests tournent contre un **vrai
-PostgreSQL** (pas de mock de base) et incluent la **conformité au contrat** : routes, codes de statut, champs
-et règle du mot de passe sont comparés à `contracts/openapi.yaml`.
+PostgreSQL** (pas de mock de base) et incluent la **conformité au contrat** : routes, `operationId`, codes de
+statut, paramètres, corps de requête et de réponse (types, bornes, champs requis, valeurs nulles) sont comparés
+**dans les deux sens** à `contracts/openapi.yaml` : tout écart, d'un côté comme de l'autre, fait échouer le test.
 
 Contre un PostgreSQL déjà initialisé (rôle `bv_utilisateurs` et schéma `utilisateurs` existants) :
 
@@ -76,12 +77,3 @@ variables obligatoires). Le service refuse de démarrer sans `DB_PASSWORD` ni `I
 `RUN_MIGRATIONS=false` dès qu'il y a plusieurs réplicas, avec un job qui lance `alembic upgrade head` ;
 sondes sur `/healthz` (vivant) et `/readyz` (prêt).
 
-## Limites connues
-
-- **Pas de limitation du nombre de tentatives** sur `login` et `register` (force brute).
-- **Pas de déconnexion**, de réinitialisation de mot de passe ni de vérification d'e-mail (absents du contrat v0.3).
-- **Une seule clé de signature** dans le JWKS : pas de rotation sans interruption.
-- `INTERNAL_SERVICE_TOKEN` est un secret partagé simple ; à durcir (mTLS, politique réseau).
-- Un jeton d'accès reste valide jusqu'à son expiration (≤ 15 min), même après révocation des sessions.
-- Les sondes `/healthz` et `/readyz` sont à la racine, alors que le contrat v0.3 les place sous `/v1` ; la route
-  `/.well-known/jwks.json` n'est pas encore dans le contrat (à ajouter en v0.4).

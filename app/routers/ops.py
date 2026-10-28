@@ -38,7 +38,7 @@ def readyz(response: Response) -> dict:
 @router.get(
     "/.well-known/jwks.json",
     tags=["auth"],
-    operation_id="jwks",
+    operation_id="getJwks",
     summary="Clé publique de signature (JWKS)",
     description=(
         "Les autres services (Ingestion, Analytique) valident les jetons d'accès **localement** avec cette clé "
