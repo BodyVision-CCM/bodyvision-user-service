@@ -53,6 +53,16 @@ pytest
 les tests tournent seuls. **À resynchroniser quand le contrat change.** Tester contre la source :
 `CONTRACT_PATH=../bodyvision-contracts/openapi.yaml pytest`.
 
+## Intégration continue
+
+Le workflow `.github/workflows/ci.yml` tourne sur chaque Pull Request et sur `main` :
+
+- Ruff vérifie les erreurs Python bloquantes (`E9,F63,F7,F82`), sans imposer de formatage.
+- `make test` exécute les tests avec le PostgreSQL jetable du dépôt.
+- L’image de production (`runtime`) est construite puis scannée par Trivy. Toute vulnérabilité
+  `CRITICAL` bloque le job, même sans correctif disponible. L’image reste sur le runner : elle
+  n’est ni publiée ni déployée.
+
 ## Base de données et migrations
 
 Le schéma `utilisateurs` et son rôle sont créés **avant** le service, par l'administrateur de la base (dans le projet
