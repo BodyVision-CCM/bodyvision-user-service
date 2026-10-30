@@ -53,6 +53,12 @@ pytest
 les tests tournent seuls. **À resynchroniser quand le contrat change.** Tester contre la source :
 `CONTRACT_PATH=../bodyvision-contracts/openapi.yaml pytest`.
 
+## Scan de sécurité
+
+Le workflow `.github/workflows/security.yml` construit l’image de production (`runtime`)
+et la scanne avec Trivy sur chaque Pull Request et sur `main`. Toute vulnérabilité
+`CRITICAL` bloque le job, même sans correctif disponible. L’image reste sur le runner.
+
 ## Base de données et migrations
 
 Le schéma `utilisateurs` et son rôle sont créés **avant** le service, par l'administrateur de la base (dans le projet
