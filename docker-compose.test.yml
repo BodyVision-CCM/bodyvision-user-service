@@ -45,3 +45,4 @@ services:
       DB_NAME: bodyvision
       DB_USER: bv_utilisateurs
       DB_PASSWORD: test-only-service-password
+      INTERNAL_SERVICE_TOKEN: test-only-internal-token-0123456789
