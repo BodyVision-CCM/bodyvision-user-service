@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app import security
 from app.config import Settings
 from app.deps import DbDep, KeysDep, SettingsDep
-from app.errors import AppError, Error, unauthorized
+from app.errors import VALIDATION_ERROR, AppError, Error, unauthorized
 from app.models import JetonRafraichissement, Profil, Utilisateur
 from app.schemas import Credentials, RefreshRequest, TokenPair
 
@@ -45,7 +45,7 @@ def _issue_tokens(db: Session, user: Utilisateur, settings: Settings, keys: secu
     description="Crée le compte et son profil vide, puis connecte directement l'utilisateur (renvoie les jetons).",
     status_code=201,
     response_model=TokenPair,
-    responses={409: {"model": Error, "description": "Un compte existe déjà avec cet e-mail."}},
+    responses={409: {"model": Error, "description": "Un compte existe déjà avec cet e-mail."}, **VALIDATION_ERROR},
 )
 def register(body: Credentials, db: DbDep, settings: SettingsDep, keys: KeysDep) -> TokenPair:
     email_taken = AppError(409, "EMAIL_ALREADY_REGISTERED", "Un compte existe déjà avec cet e-mail.")
@@ -68,7 +68,7 @@ def register(body: Credentials, db: DbDep, settings: SettingsDep, keys: KeysDep)
     operation_id="login",
     summary="Se connecter",
     response_model=TokenPair,
-    responses={401: {"model": Error, "description": "E-mail ou mot de passe incorrect."}},
+    responses={401: {"model": Error, "description": "E-mail ou mot de passe incorrect."}, **VALIDATION_ERROR},
 )
 def login(body: Credentials, db: DbDep, settings: SettingsDep, keys: KeysDep) -> TokenPair:
     # Même erreur et même durée que l'e-mail soit inconnu ou le mot de passe faux (pas d'énumération de comptes).
@@ -94,7 +94,7 @@ def login(body: Credentials, db: DbDep, settings: SettingsDep, keys: KeysDep) ->
 
 @router.post(
     "/refresh",
-    operation_id="refresh",
+    operation_id="refreshToken",
     summary="Renouveler le jeton d'accès",
     description=(
         "Échange un jeton de rafraîchissement contre une **nouvelle paire** de jetons : l'ancien jeton est "
@@ -102,7 +102,10 @@ def login(body: Credentials, db: DbDep, settings: SettingsDep, keys: KeysDep) ->
         "du compte sont alors révoquées et l'utilisateur doit se reconnecter."
     ),
     response_model=TokenPair,
-    responses={401: {"model": Error, "description": "Jeton de rafraîchissement inconnu, expiré ou déjà utilisé."}},
+    responses={
+        401: {"model": Error, "description": "Jeton de rafraîchissement inconnu, expiré ou déjà utilisé."},
+        **VALIDATION_ERROR,
+    },
 )
 def refresh(body: RefreshRequest, db: DbDep, settings: SettingsDep, keys: KeysDep) -> TokenPair:
     digest = security.hash_refresh_token(body.refresh_token)

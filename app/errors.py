@@ -16,7 +16,12 @@ class Error(BaseModel):
 
     code: str = Field(examples=["INVALID_CREDENTIALS"])
     message: str
-    traceId: str | None = None
+    traceId: str = Field(None, description="Identifiant de corrélation (aussi dans l'en-tête X-Request-ID).")
+
+
+# À déclarer (`responses=`) sur les seules routes qui ont des entrées à valider : une route sans paramètre
+# ne renvoie jamais de 422, et le contrat ne doit pas l'annoncer.
+VALIDATION_ERROR = {422: {"model": Error, "description": "Requête invalide (champ manquant ou hors limites)."}}
 
 
 class AppError(Exception):

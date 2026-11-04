@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: BodyVision API
-  version: 0.3.0
+  version: 0.4.1
   description: |
     Contrat API BodyVision
 
@@ -16,6 +16,8 @@ info:
       modele de donnees (GENOU, DESCENTE, SEMAINE...).
     - Landmarks encodes en tableaux [x, y, z, v] (v0.3), 10 FPS vers le Cloud.
     - Statistiques : uniquement sur les series filmees.
+    - Hors prefixe /v1 : les sondes (/healthz, /readyz) et le JWKS (/.well-known/jwks.json) ne sont pas des
+      routes d'API versionnees ; ils portent leur propre `servers` (sans /v1).
 servers:
   - url: https://api.bodyvision.example/v1
   - url: http://localhost:4010/v1
@@ -36,6 +38,7 @@ paths:
   /auth/register:
     post:
       tags: [auth]
+      operationId: register
       security: []
       summary: Creer un compte
       requestBody:
@@ -50,9 +53,11 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TokenPair' }
         '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
   /auth/login:
     post:
       tags: [auth]
+      operationId: login
       security: []
       summary: Se connecter
       requestBody:
@@ -67,9 +72,11 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TokenPair' }
         '401': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
   /auth/refresh:
     post:
       tags: [auth]
+      operationId: refreshToken
       security: []
       summary: Renouveler le token d'acces
       requestBody:
@@ -80,16 +87,41 @@ paths:
               type: object
               required: [refreshToken]
               properties:
-                refreshToken: { type: string }
+                refreshToken: { type: string, minLength: 1, maxLength: 512 }
       responses:
         '200':
           description: OK
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TokenPair' }
+        '401': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /.well-known/jwks.json:
+    servers:
+      - url: https://api.bodyvision.example
+      - url: http://localhost:4010
+        description: Mock Prism
+    get:
+      tags: [auth]
+      operationId: getJwks
+      security: []
+      summary: Cle publique de signature des jetons (JWKS)
+      description: |
+        Les autres services (Ingestion, Analytique) valident les jetons d'acces localement avec cette cle
+        publique, sans appeler le service Utilisateurs a chaque requete. Le `kid` du jeton designe la cle a utiliser.
+        Route publique, hors prefixe /v1.
+      responses:
+        '200':
+          description: Jeu de cles publiques
+          headers:
+            Cache-Control: { schema: { type: string, example: 'public, max-age=300' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JwkSet' }
   /users/me:
     get:
       tags: [users]
+      operationId: getMyProfile
       summary: Profil courant (ecran Profil)
       responses:
         '200':
@@ -97,23 +129,33 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/UserProfile' }
+        '401': { $ref: '#/components/responses/Error' }
     patch:
       tags: [users]
+      operationId: updateMyProfile
       summary: Mettre a jour le profil (morphologie, reglages)
+      description: |
+        Mise a jour partielle : seuls les champs envoyes sont modifies. `null` efface le nom ou la morphologie ;
+        un reglage (`settings`) ne peut pas etre efface. `id` et `email` sont en lecture seule : ignores s'ils sont
+        envoyes, on peut donc renvoyer tel quel le resultat de GET /users/me.
       requestBody:
+        required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/UserProfile' }
+            schema: { $ref: '#/components/schemas/UserProfileUpdate' }
       responses:
         '200':
           description: OK
           content:
             application/json:
               schema: { $ref: '#/components/schemas/UserProfile' }
+        '401': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
 
   /exercises:
     get:
       tags: [exercises]
+      operationId: listExercises
       summary: Catalogue d'exercices (ecran Choix de l'exercice)
       parameters:
         - { name: q, in: query, description: Recherche texte, schema: { type: string } }
@@ -130,6 +172,7 @@ paths:
   /exercises/{code}:
     get:
       tags: [exercises]
+      operationId: getExercise
       summary: Detail d'un exercice avec ses seuils biomecaniques
       description: |
         Les seuils vivent en base (seuil_biomecanique). Le mobile les telecharge et les
@@ -151,6 +194,7 @@ paths:
   /sessions:
     post:
       tags: [sessions]
+      operationId: createSession
       summary: Ouvrir une seance
       description: Une seance peut contenir plusieurs exercices (l'exercice est porte par la serie).
       requestBody:
@@ -166,6 +210,7 @@ paths:
               schema: { $ref: '#/components/schemas/Session' }
     get:
       tags: [sessions]
+      operationId: listSessions
       summary: Lister mes seances (Accueil, bandeau "seance en cours")
       description: Pour le bandeau, utiliser status=ACTIVE&limit=1.
       parameters:
@@ -187,6 +232,7 @@ paths:
   /sessions/{sessionId}:
     get:
       tags: [sessions]
+      operationId: getSession
       summary: Detail d'une seance
       parameters:
         - { $ref: '#/components/parameters/SessionId' }
@@ -200,6 +246,7 @@ paths:
   /sessions/{sessionId}/finish:
     post:
       tags: [sessions]
+      operationId: finishSession
       summary: Terminer la seance
       parameters:
         - { $ref: '#/components/parameters/SessionId' }
@@ -213,6 +260,7 @@ paths:
   /sessions/{sessionId}/series:
     post:
       tags: [series]
+      operationId: uploadSeries
       summary: Envoyer une serie (lot de telemetrie, asynchrone)
       description: |
         Un appel = une serie complete (ex. 10 squats ~ 300 frames a 10 FPS, ~0,26 Mo avant gzip).
@@ -232,7 +280,9 @@ paths:
             schema: { $ref: '#/components/schemas/SeriesUpload' }
       responses:
         '202':
-          description: Lot accepte et mis en file
+          description: |
+            Lot accepte et mis en file. Le `batchId` retourne est aussi le `seriesId` de la serie : il s'utilise
+            directement dans l'URL du rapport, GET /sessions/{sessionId}/series/{seriesId}/report.
           content:
             application/json:
               schema:
@@ -248,6 +298,7 @@ paths:
             Retry-After: { schema: { type: integer } }
     get:
       tags: [series]
+      operationId: listSeries
       summary: Series d'une seance
       parameters:
         - { $ref: '#/components/parameters/SessionId' }
@@ -262,6 +313,7 @@ paths:
   /sessions/{sessionId}/series/{seriesId}/report:
     get:
       tags: [series]
+      operationId: getSeriesReport
       summary: Rapport de serie (ecran Rapport de serie)
       description: Tant que status != DONE, repetitions est vide => le mobile reinterroge (polling).
       parameters:
@@ -278,6 +330,7 @@ paths:
   /stats/progress:
     get:
       tags: [stats]
+      operationId: getProgress
       summary: Progression (ecran Progression, lit agregat_progression)
       parameters:
         - { name: exercise, in: query, required: true, schema: { $ref: '#/components/schemas/ExerciseCode' } }
@@ -293,6 +346,7 @@ paths:
   /stats/summary:
     get:
       tags: [stats]
+      operationId: getSummary
       summary: Chiffres cles (Accueil = semaine, Profil = global)
       parameters:
         - { name: from, in: query, schema: { type: string, format: date } }
@@ -307,6 +361,7 @@ paths:
   /internal/users/{userId}/morphology:
     get:
       tags: [internal]
+      operationId: getUserMorphology
       security: [{ serviceToken: [] }]
       summary: Morphologie d'un utilisateur (Analytique -> Utilisateurs)
       description: Sert a normaliser les angles. Pas de jointure entre schemas - appel d'API.
@@ -318,22 +373,47 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Morphology' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
 
   /healthz:
+    servers:
+      - url: https://api.bodyvision.example
+      - url: http://localhost:4010
+        description: Mock Prism
     get:
       tags: [ops]
+      operationId: liveness
       security: []
       summary: Liveness probe
       responses:
-        '200': { description: OK }
+        '200':
+          description: Le processus repond
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Liveness' }
   /readyz:
+    servers:
+      - url: https://api.bodyvision.example
+      - url: http://localhost:4010
+        description: Mock Prism
     get:
       tags: [ops]
+      operationId: readiness
       security: []
       summary: Readiness probe (PostgreSQL + RabbitMQ joignables)
       responses:
-        '200': { description: Pret }
-        '503': { description: Non pret }
+        '200':
+          description: Pret
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+        '503':
+          description: Non pret, ne pas envoyer de trafic a cette instance
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
 
 components:
   securitySchemes:
@@ -350,6 +430,24 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
   schemas:
+    JwkSet:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items: { $ref: '#/components/schemas/Jwk' }
+    Jwk:
+      type: object
+      description: Cle publique RSA au format JWK (RFC 7517)
+      required: [kty, use, alg, kid, n, e]
+      properties:
+        kty: { type: string, example: RSA }
+        use: { type: string, example: sig }
+        alg: { type: string, example: RS256 }
+        kid: { type: string, description: Identifiant de la cle ; le jeton le reprend dans son en-tete }
+        n: { type: string, description: Module RSA (base64url) }
+        e: { type: string, description: Exposant public RSA (base64url), example: AQAB }
     Error:
       type: object
       required: [code, message]
@@ -362,43 +460,80 @@ components:
       required: [email, password]
       properties:
         email: { type: string, format: email }
-        password: { type: string, format: password, minLength: 10 }
+        password: { type: string, format: password, minLength: 10, maxLength: 128 }
     TokenPair:
       type: object
+      required: [accessToken, refreshToken, expiresIn]
       properties:
         accessToken: { type: string }
         refreshToken: { type: string }
-        expiresIn: { type: integer, example: 900 }
+        expiresIn: { type: integer, example: 900, description: "Duree de validite du jeton d'acces, en secondes" }
+    HeightCm: { type: integer, nullable: true, minimum: 100, maximum: 250 }
+    WeightKg: { type: number, nullable: true, minimum: 20, maximum: 300 }
+    Level: { type: string, nullable: true, enum: [BEGINNER, INTERMEDIATE, ADVANCED, null] }
     Morphology:
       type: object
+      description: Toujours renvoyee en entier ; une valeur non renseignee vaut null.
+      required: [heightCm, weightKg, level]
       properties:
-        heightCm: { type: integer }
-        weightKg: { type: number }
-        level: { type: string, enum: [BEGINNER, INTERMEDIATE, ADVANCED] }
+        heightCm: { $ref: '#/components/schemas/HeightCm' }
+        weightKg: { $ref: '#/components/schemas/WeightKg' }
+        level: { $ref: '#/components/schemas/Level' }
     UserProfile:
       allOf:
         - { $ref: '#/components/schemas/Morphology' }
         - type: object
+          required: [id, email, displayName, settings]
           properties:
             id: { type: string, format: uuid, readOnly: true }
             email: { type: string, format: email, readOnly: true }
-            displayName: { type: string }
+            displayName: { type: string, nullable: true, maxLength: 100 }
             settings:
               type: object
               description: |
                Reglages d'analyse et d'envoi (a confirmer : serveur ou local au mobile)
+              required: [analysisQuality, uploadMode]
               properties:
-                analysisQuality: { type: string, example: 640x480@30 }
+                analysisQuality: { type: string, maxLength: 32, example: 640x480@30 }
                 uploadMode: { type: string, enum: [WIFI_ONLY, ANY_NETWORK, MANUAL], default: WIFI_ONLY }
+    UserProfileUpdate:
+      description: |
+        Corps de PATCH /users/me. Tous les champs sont optionnels. `id` et `email` n'y figurent pas : ils sont
+        en lecture seule.
+      type: object
+      properties:
+        heightCm: { $ref: '#/components/schemas/HeightCm' }
+        weightKg: { $ref: '#/components/schemas/WeightKg' }
+        level: { $ref: '#/components/schemas/Level' }
+        displayName: { type: string, nullable: true, maxLength: 100 }
+        settings:
+          type: object
+          properties:
+            analysisQuality: { type: string, maxLength: 32, example: 640x480@30 }
+            uploadMode: { type: string, enum: [WIFI_ONLY, ANY_NETWORK, MANUAL] }
+    Liveness:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [ok] }
+    Readiness:
+      type: object
+      required: [status, database]
+      properties:
+        status: { type: string, enum: [ready, unavailable] }
+        database: { type: string, enum: [up, down], description: Etat de PostgreSQL }
     ExerciseCode:
       type: string
       pattern: '^[A-Z0-9_]+$'
       example: SQUAT
     Joint:
       type: string
-      description: Articulation (extensible)
+      description: |
+        Articulation surveillee, code du referentiel analytique.articulation.
+        Le referentiel est extensible : un ajout en base ne doit pas casser les clients.
+        Valeurs actuelles, a titre indicatif : GENOU, HANCHE, DOS, EPAULE, COUDE, CHEVILLE.
+      pattern: '^[A-Z0-9_]+$'
       example: GENOU
-      enum: [GENOU, HANCHE, DOS, EPAULE, COUDE, CHEVILLE]
     Phase:
       type: string
       enum: [DESCENTE, BAS, MONTEE]
@@ -486,7 +621,12 @@ components:
       type: object
       required: [batchId, index, exerciseCode, startedAt, endedAt, contractVersion, capture, frames]
       properties:
-        batchId: { type: string, format: uuid, description: Cle d'idempotence (traitement_lot.batch_id) }
+        batchId:
+          type: string
+          format: uuid
+          description: |
+            Cle d'idempotence (traitement_lot.batch_id), generee par le mobile. C'est aussi le `seriesId` de la serie
+            (serie.id = batchId) : le mobile peut interroger le rapport sans attendre de reponse du serveur.
         index: { type: integer, minimum: 0, description: Rang de la serie dans la seance }
         exerciseCode: { $ref: '#/components/schemas/ExerciseCode' }
         startedAt: { type: string, format: date-time }
@@ -607,6 +747,12 @@ components:
         sessionCount: { type: integer }
         seriesCount: { type: integer }
         repCount: { type: integer }
-        anomalyRate: { type: number }
+        anomalyRate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: |
+            Part des repetitions ayant au moins une anomalie (nb_repetitions_avec_anomalie / nb_repetitions).
+            Ce n'est pas le nombre d'anomalies par repetition, qui peut depasser 1.
         scope: { type: string, enum: [FILMED_SERIES_ONLY] }
 

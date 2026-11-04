@@ -4,7 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path
 
 from app.deps import DbDep, require_service_token
-from app.errors import AppError, Error
+from app.errors import VALIDATION_ERROR, AppError, Error
 from app.models import Utilisateur
 from app.schemas import Morphology, to_morphology
 
@@ -26,7 +26,7 @@ router = APIRouter(
         "Analytique appelle cette API avec le jeton de service."
     ),
     response_model=Morphology,
-    responses={404: {"model": Error, "description": "Utilisateur inconnu."}},
+    responses={404: {"model": Error, "description": "Utilisateur inconnu."}, **VALIDATION_ERROR},
 )
 def get_user_morphology(
     user_id: Annotated[uuid.UUID, Path(alias="userId", description="Identifiant de l'utilisateur.")], db: DbDep

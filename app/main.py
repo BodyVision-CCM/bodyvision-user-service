@@ -7,7 +7,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from app import __version__
 from app.config import get_settings
 from app.db import get_engine
-from app.errors import Error, register_exception_handlers
+from app.errors import register_exception_handlers
 from app.logging_config import RequestContextMiddleware, setup_logging
 from app.routers import auth, internal, ops, users
 from app.security import get_keys
@@ -59,8 +59,6 @@ def create_app() -> FastAPI:
         docs_url="/docs" if settings.enable_docs else None,
         redoc_url="/redoc" if settings.enable_docs else None,
         openapi_url="/openapi.json" if settings.enable_docs else None,
-        # Nos erreurs de validation ont le format `Error`, pas le HTTPValidationError par défaut de FastAPI.
-        responses={422: {"model": Error, "description": "Requête invalide (champ manquant ou hors limites)."}},
     )
     app.add_middleware(RequestContextMiddleware)
     register_exception_handlers(app)

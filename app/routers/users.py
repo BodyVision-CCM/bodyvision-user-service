@@ -4,7 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from app.deps import DbDep, get_current_user
-from app.errors import Error
+from app.errors import VALIDATION_ERROR, Error
 from app.models import Profil, Utilisateur
 from app.schemas import UserProfile, UserProfileUpdate, to_user_profile
 
@@ -19,7 +19,7 @@ CurrentUser = Annotated[Utilisateur, Depends(get_current_user)]
 
 @router.get(
     "/me",
-    operation_id="getMe",
+    operation_id="getMyProfile",
     summary="Profil courant",
     description="Identité, morphologie et réglages de l'utilisateur connecté (écran Profil).",
     response_model=UserProfile,
@@ -30,7 +30,7 @@ def get_me(user: CurrentUser) -> UserProfile:
 
 @router.patch(
     "/me",
-    operation_id="updateMe",
+    operation_id="updateMyProfile",
     summary="Mettre à jour le profil",
     description=(
         "Mise à jour **partielle** : seuls les champs envoyés sont modifiés. `null` efface le nom ou la "
@@ -38,6 +38,7 @@ def get_me(user: CurrentUser) -> UserProfile:
         "(ignorés s'ils sont envoyés), on peut donc renvoyer tel quel le résultat de `GET /v1/users/me`."
     ),
     response_model=UserProfile,
+    responses=VALIDATION_ERROR,
 )
 def update_me(body: UserProfileUpdate, user: CurrentUser, db: DbDep) -> UserProfile:
     sent = body.model_fields_set

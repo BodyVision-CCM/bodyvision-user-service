@@ -1,10 +1,10 @@
-"""Schémas d'entrée/sortie. Les noms et les champs reprennent ceux de openapi.yaml (contrat v0.3) :
+"""Schémas d'entrée/sortie. Les noms et les champs reprennent ceux de openapi.yaml (contrat v0.4) :
 Credentials, TokenPair, Morphology, UserProfile. Un test vérifie cette conformité."""
 
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 from app.models import Utilisateur
@@ -16,7 +16,11 @@ UploadMode = Literal["WIFI_ONLY", "ANY_NETWORK", "MANUAL"]
 class CamelModel(BaseModel):
     """JSON en camelCase (comme le contrat), attributs Python en snake_case."""
 
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore")
+    # json_schema_serialization_defaults_required : dans le schéma des RÉPONSES, un champ qui a une valeur par défaut
+    # est tout de même toujours renvoyé, donc « required » (le contrat le dit ainsi).
+    model_config = ConfigDict(
+        alias_generator=to_camel, populate_by_name=True, extra="ignore", json_schema_serialization_defaults_required=True
+    )
 
 
 class Credentials(CamelModel):
@@ -53,7 +57,7 @@ class UserSettings(CamelModel):
 class UserProfile(Morphology):
     id: uuid.UUID
     email: EmailStr
-    display_name: str | None = None
+    display_name: str | None = Field(None, max_length=100)
     settings: UserSettings
 
 
@@ -61,27 +65,40 @@ class UserProfile(Morphology):
 #     la morphologie ou le nom, mais un réglage ne peut pas être effacé.
 
 
+# Ici `str = Field(None)` et non `str | None` : le champ est optionnel mais NON nullable (le contrat le dit, et
+# Pydantic refuse un null explicite), alors que le nom et la morphologie, eux, acceptent null pour s'effacer.
 class UserSettingsUpdate(CamelModel):
-    analysis_quality: str | None = Field(None, max_length=32)
-    upload_mode: UploadMode | None = None
-
-    @model_validator(mode="after")
-    def _no_null_setting(self):
-        for name in self.model_fields_set:
-            if getattr(self, name) is None:
-                raise ValueError(f"{to_camel(name)} ne peut pas être null.")
-        return self
+    analysis_quality: str = Field(None, max_length=32)
+    upload_mode: UploadMode = Field(None)
 
 
 class UserProfileUpdate(Morphology):
     display_name: str | None = Field(None, max_length=100)
-    settings: UserSettingsUpdate | None = None
+    settings: UserSettingsUpdate = Field(None)
 
-    @model_validator(mode="after")
-    def _no_null_settings(self):
-        if "settings" in self.model_fields_set and self.settings is None:
-            raise ValueError("settings ne peut pas être null.")
-        return self
+
+class Jwk(BaseModel):
+    """Clé publique RSA au format JWK (RFC 7517). Schéma `Jwk` du contrat."""
+
+    kty: str = Field(examples=["RSA"])
+    use: str = Field(examples=["sig"])
+    alg: str = Field(examples=["RS256"])
+    kid: str = Field(description="Identifiant de la clé ; le jeton le reprend dans son en-tête.")
+    n: str = Field(description="Module RSA (base64url).")
+    e: str = Field(description="Exposant public RSA (base64url).", examples=["AQAB"])
+
+
+class JwkSet(BaseModel):
+    keys: list[Jwk]
+
+
+class Liveness(BaseModel):
+    status: Literal["ok"]
+
+
+class Readiness(BaseModel):
+    status: Literal["ready", "unavailable"]
+    database: Literal["up", "down"] = Field(description="État de PostgreSQL.")
 
 
 def to_user_profile(user: Utilisateur) -> UserProfile:
