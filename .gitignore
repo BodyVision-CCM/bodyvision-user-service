@@ -8,3 +8,6 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+
+# Credentials OIDC temporaires, jamais dans Git ou le contexte Docker
+gha-creds-*.json

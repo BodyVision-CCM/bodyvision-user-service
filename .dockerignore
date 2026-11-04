@@ -11,3 +11,6 @@ docker
 docker-compose*.yml
 Makefile
 README.md
+
+# Credentials OIDC temporaires, jamais dans Git ou le contexte Docker
+gha-creds-*.json

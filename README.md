@@ -71,9 +71,41 @@ make build   # image de production bodyvision/auth:dev (Dockerfile à la racine 
 Toute la configuration passe par variables d'environnement : voir **`.env.example`** (références, valeurs par défaut,
 variables obligatoires). Le service refuse de démarrer sans `DB_PASSWORD` ni `INTERNAL_SERVICE_TOKEN`.
 
-**Pour un déploiement** (à adapter à votre plateforme, aucun pipeline n'est fourni ici) :
+**Pour un déploiement GKE (SCRUM-48)** :
 `JWT_AUTOGENERATE_KEYS=false` et clé fournie par un secret (`JWT_PRIVATE_KEY_FILE` ou `JWT_PRIVATE_KEY`) ;
 `ENABLE_DOCS=false` ; secrets (`DB_PASSWORD`, `INTERNAL_SERVICE_TOKEN`) hors du dépôt ;
 `RUN_MIGRATIONS=false` dès qu'il y a plusieurs réplicas, avec un job qui lance `alembic upgrade head` ;
 sondes sur `/healthz` (vivant) et `/readyz` (prêt).
 
+
+## Publication de l'image — SCRUM-43
+
+Le workflow `.github/workflows/security.yml` construit la cible `runtime` et
+bloque les vulnérabilités CRITICAL sur chaque PR et sur `main`. Les identifiants
+de source et de commit sont inscrits dans les labels OCI de l'image.
+
+Après un push sur `main`, l'image déjà scannée est transférée au job de
+publication par un artefact GitHub conservé un jour. Ce job ne reconstruit pas
+l'image. Lui seul possède `id-token: write` et s'authentifie par OIDC avec le
+compte `bv-dev-users-build`, limité au registre Docker. Aucun secret de type
+clé JSON, aucun droit GKE, aucun besoin de cluster allumé.
+
+Image publiée :
+
+```text
+europe-west9-docker.pkg.dev/bodyvision-509616/bodyvision-dev-docker/user-service:<SHA complet>
+```
+
+Les tags sont immuables. Une relance réutilise le tag existant : l'image est
+relue par digest, ses labels de révision/source sont vérifiés et le digest
+effectivement publié est scanné à nouveau par Trivy. Le résumé Actions donne
+la référence `user-service@sha256:...` à utiliser ensuite pour le déploiement.
+Une vulnérabilité CRITICAL bloque le job, y compris sans correctif disponible.
+
+Prérequis : les ressources SCRUM-108 et l'identité Utilisateurs de SCRUM-43
+dans `bodyvision-infrastructure/infra/terraform/environments/persistent`.
+Une PR ne publie aucune image et n'utilise aucune identité GCP.
+
+Cette modification ne crée pas la CI lint/tests applicatifs de SCRUM-42
+(réservée à Brice) et ne déploie pas sur GKE. Le ticket SCRUM-43 prévoit aussi
+Ingestion et Analytique ; leurs images attendent des dépôts/sources disponibles.

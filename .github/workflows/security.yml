@@ -3,7 +3,7 @@ name: Sécurité Trivy
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, codex/scrum-43-build-push]
 
 permissions:
   contents: read
@@ -24,13 +24,102 @@ jobs:
           persist-credentials: false
 
       - name: Construire l’image de production
-        run: docker build --pull --target runtime -t bodyvision/auth:${{ github.sha }} .
+        run: |
+          docker build --pull --target runtime \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            -t "bodyvision/auth:$GITHUB_SHA" .
 
       - name: Bloquer les vulnérabilités critiques
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.76.1
           image-ref: bodyvision/auth:${{ github.sha }}
+          scanners: vuln
+          severity: CRITICAL
+          exit-code: '1'
+          ignore-unfixed: false
+
+      - name: Exporter l’image scannée pour la publication
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker save "bodyvision/auth:$GITHUB_SHA" --output "$RUNNER_TEMP/runtime-image.tar"
+
+      - name: Transmettre l’image scannée
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runtime-${{ github.sha }}
+          path: ${{ runner.temp }}/runtime-image.tar
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    name: Publier dans Artifact Registry
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: trivy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      REGISTRY: europe-west9-docker.pkg.dev
+      IMAGE: europe-west9-docker.pkg.dev/bodyvision-509616/bodyvision-dev-docker/user-service
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Récupérer l’image scannée
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: runtime-${{ github.sha }}
+          path: ${{ runner.temp }}/runtime-image
+
+      - name: Charger l’image sans la reconstruire
+        run: docker load --input "$RUNNER_TEMP/runtime-image/runtime-image.tar"
+
+      - name: Authentifier le compte de build par OIDC
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: bodyvision-509616
+          workload_identity_provider: projects/669761732802/locations/global/workloadIdentityPools/bodyvision-dev-github/providers/user-service
+          service_account: bv-dev-users-build@bodyvision-509616.iam.gserviceaccount.com
+
+      - name: Installer gcloud
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Publier le tag SHA immuable
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud auth configure-docker "$REGISTRY" --quiet
+          repository="${IMAGE%/*}"
+          tags="$(gcloud artifacts docker images list "$repository" --include-tags \
+            --filter="package=$IMAGE" --flatten=tags --format='value(tags)')"
+          if ! grep -Fxq "$GITHUB_SHA" <<< "$tags"; then
+            docker tag "bodyvision/auth:$GITHUB_SHA" "$IMAGE:$GITHUB_SHA"
+            docker push "$IMAGE:$GITHUB_SHA"
+          fi
+          digest="$(gcloud artifacts docker images describe "$IMAGE:$GITHUB_SHA" --format='value(image_summary.digest)')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker pull "$IMAGE@$digest"
+          revision="$(docker image inspect "$IMAGE@$digest" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          source="$(docker image inspect "$IMAGE@$digest" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')"
+          [[ "$revision" == "$GITHUB_SHA" ]]
+          [[ "$source" == "https://github.com/$GITHUB_REPOSITORY" ]]
+          printf 'image=%s\n' "$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+          printf '### Image publiée\n\n- Commit : `%s`\n- Tag : `%s`\n- Référence : `%s`\n' \
+            "$GITHUB_SHA" "$IMAGE:$GITHUB_SHA" "$IMAGE@$digest" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Scanner le digest effectivement publié
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.76.1
+          image-ref: ${{ steps.publish.outputs.image }}
           scanners: vuln
           severity: CRITICAL
           exit-code: '1'
