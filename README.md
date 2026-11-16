@@ -2,7 +2,7 @@
 
 Comptes, authentification JWT, profil et morphologie. **FastAPI + PostgreSQL**, dépôt indépendant :
 il se teste, se construit et se déploie seul. Pour le lancer **avec les autres services**, voir le dépôt
-`infra-compose` (cloné à côté de celui-ci).
+https://github.com/BodyVision-CCM/bodyvision-infra-compose (cloné à côté de celui-ci).
 
 Implémente les routes `auth`, `users`, `internal`, ainsi que les sondes et le JWKS (hors `/v1`), du contrat OpenAPI v0.4.
 
@@ -35,7 +35,7 @@ Implémente les routes `auth`, `users`, `internal`, ainsi que les sondes et le J
 make test    # 70 tests dans Docker, avec un PostgreSQL jetable (aucun port publié, données en mémoire)
 ```
 
-Aucune dépendance au dépôt `infra-compose` : la même commande sert en CI. Les tests tournent contre un **vrai
+Aucune dépendance au dépôt https://github.com/BodyVision-CCM/bodyvision-infra-compose : la même commande sert en CI. Les tests tournent contre un **vrai
 PostgreSQL** (pas de mock de base) et incluent la **conformité au contrat** : routes, `operationId`, codes de
 statut, paramètres, corps de requête et de réponse (types, bornes, champs requis, valeurs nulles) sont comparés
 **dans les deux sens** à `contracts/openapi.yaml` : tout écart, d'un côté comme de l'autre, fait échouer le test.
@@ -57,7 +57,7 @@ les tests tournent seuls. **À resynchroniser quand le contrat change.** Tester 
 ## Base de données et migrations
 
 Le schéma `utilisateurs` et son rôle sont créés **avant** le service, par l'administrateur de la base (dans le projet
-local : `infra-compose/postgres/init/`) : le service n'a pas le droit de créer un schéma. Les **tables** sont créées
+local : https://github.com/BodyVision-CCM/bodyvision-infra-compose/tree/master/postgres/init) : le service n'a pas le droit de créer un schéma. Les **tables** sont créées
 par les migrations Alembic (`migrations/`), jouées au démarrage du conteneur si `RUN_MIGRATIONS=true`.
 La migration 0001 est l'équivalent exact du DDL du ticket de modélisation. `alembic_version` vit dans le schéma
 du service : chaque service a son propre historique.
@@ -76,4 +76,3 @@ variables obligatoires). Le service refuse de démarrer sans `DB_PASSWORD` ni `I
 `ENABLE_DOCS=false` ; secrets (`DB_PASSWORD`, `INTERNAL_SERVICE_TOKEN`) hors du dépôt ;
 `RUN_MIGRATIONS=false` dès qu'il y a plusieurs réplicas, avec un job qui lance `alembic upgrade head` ;
 sondes sur `/healthz` (vivant) et `/readyz` (prêt).
-
