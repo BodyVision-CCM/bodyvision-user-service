@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: BodyVision API
-  version: 0.4.1
+  version: 0.4.2
   description: |
     Contrat API BodyVision
 
@@ -79,6 +79,13 @@ paths:
       operationId: refreshToken
       security: []
       summary: Renouveler le token d'acces
+      description: |
+        Echange un jeton de rafraichissement contre une nouvelle paire de jetons ; l'ancien est revoque (rotation).
+        Rejouer un jeton deja echange dans la fenetre de tolerance (30 s par defaut, `REFRESH_REUSE_INTERVAL_SECONDS`
+        cote service) emet une nouvelle paire et revoque celle du premier appel, sans toucher aux autres sessions
+        (reponse perdue, deux appels simultanes). Au-dela, ou pour un jeton revoque par purge, c'est traite comme un
+        vol : toutes les sessions du compte sont revoquees (401, code `REFRESH_TOKEN_REUSED`) et l'utilisateur doit
+        se reconnecter.
       requestBody:
         required: true
         content:
@@ -755,4 +762,3 @@ components:
             Part des repetitions ayant au moins une anomalie (nb_repetitions_avec_anomalie / nb_repetitions).
             Ce n'est pas le nombre d'anomalies par repetition, qui peut depasser 1.
         scope: { type: string, enum: [FILMED_SERIES_ONLY] }
-

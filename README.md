@@ -2,7 +2,7 @@
 
 Comptes, authentification JWT, profil et morphologie. **FastAPI + PostgreSQL**, dépôt indépendant :
 il se teste, se construit et se déploie seul. Pour le lancer **avec les autres services**, voir le dépôt
-https://github.com/BodyVision-CCM/bodyvision-infra-compose (cloné à côté de celui-ci).
+https://github.com/BodyVision-CCM/bodyvision-infra-compose (cloné à côté de celui-ci ; `make db` y suffit pour avoir PostgreSQL seul).
 
 Implémente les routes `auth`, `users`, `internal`, ainsi que les sondes et le JWKS (hors `/v1`), du contrat OpenAPI v0.4.
 
@@ -25,6 +25,10 @@ Implémente les routes `auth`, `users`, `internal`, ainsi que les sondes et le J
 - Mots de passe : **argon2id**, minimum 10 caractères.
 - Jeton d'accès : **JWT RS256**, 900 s. Jeton de rafraîchissement : **opaque, stocké haché, à usage unique**.
   Présenter un jeton déjà utilisé est traité comme un vol : **toutes les sessions du compte sont révoquées**.
+  Exception : une **fenêtre de tolérance au rejeu** (`REFRESH_REUSE_INTERVAL_SECONDS`, 30 s par défaut, 0 pour la
+  désactiver) accepte un jeton tout juste échangé par rotation (réponse perdue, deux appels simultanés) : une nouvelle
+  paire est émise, celle du premier appel est révoquée, les autres sessions ne sont pas touchées. Un jeton révoqué
+  par purge n'est jamais toléré.
 - Clé de signature en fichier `0600` ; conteneur non-root.
 - Erreurs au format du contrat `{ code, message, traceId }` ; `traceId` aussi dans `X-Request-ID` et les logs JSON.
 - Le rôle SQL du service n'a accès qu'au schéma `utilisateurs`.
@@ -50,14 +54,15 @@ pytest
 
 ### Le contrat
 
-`contracts/openapi.yaml` est un **instantané** du contrat (source : dépôt `bodyvision-contracts`), embarqué pour que
+`contracts/openapi.yaml` est un **instantané** du contrat (source : [dépôt `bodyvision-contracts`](https://github.com/BodyVision-CCM/bodyvision-contracts)), embarqué pour que
 les tests tournent seuls. **À resynchroniser quand le contrat change.** Tester contre la source :
 `CONTRACT_PATH=../bodyvision-contracts/openapi.yaml pytest`.
 
 ## Base de données et migrations
 
 Le schéma `utilisateurs` et son rôle sont créés **avant** le service, par l'administrateur de la base (dans le projet
-local : https://github.com/BodyVision-CCM/bodyvision-infra-compose/tree/master/postgres/init) : le service n'a pas le droit de créer un schéma. Les **tables** sont créées
+local : https://github.com/BodyVision-CCM/bodyvision-infra-compose/tree/master/postgres/init ; la liste des rôles et schémas
+attendus par service y est dans le README) : le service n'a pas le droit de créer un schéma. Les **tables** sont créées
 par les migrations Alembic (`migrations/`), jouées au démarrage du conteneur si `RUN_MIGRATIONS=true`.
 La migration 0001 est l'équivalent exact du DDL du ticket de modélisation. `alembic_version` vit dans le schéma
 du service : chaque service a son propre historique.
@@ -76,3 +81,5 @@ variables obligatoires). Le service refuse de démarrer sans `DB_PASSWORD` ni `I
 `ENABLE_DOCS=false` ; secrets (`DB_PASSWORD`, `INTERNAL_SERVICE_TOKEN`) hors du dépôt ;
 `RUN_MIGRATIONS=false` dès qu'il y a plusieurs réplicas, avec un job qui lance `alembic upgrade head` ;
 sondes sur `/healthz` (vivant) et `/readyz` (prêt).
+
+
