@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     jwt_autogenerate_keys: bool = False
     access_token_ttl_seconds: int = Field(900, ge=60)
     refresh_token_ttl_days: int = Field(30, ge=1)
+    # Fenêtre de tolérance au rejeu d'un jeton déjà échangé (réponse perdue, deux appels simultanés), en secondes.
+    # 0 = aucune tolérance : tout rejeu est traité comme un vol. (Auth0 : « refresh token reuse interval ».)
+    refresh_reuse_interval_seconds: int = Field(30, ge=0, le=300)
 
     # --- Appels service-à-service (ex. Analytique -> /internal/users/{id}/morphology)
     internal_service_token: SecretStr = Field(min_length=16)

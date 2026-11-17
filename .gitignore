@@ -1,4 +1,5 @@
 # Secrets et fichiers locaux : ne jamais commiter
+.idea/
 .env
 *.pem
 secrets/

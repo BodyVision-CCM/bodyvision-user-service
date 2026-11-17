@@ -1,4 +1,5 @@
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter
@@ -21,16 +22,23 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _issue_tokens(db: Session, user: Utilisateur, settings: Settings, keys: security.JwtKeys) -> TokenPair:
-    """Crée un jeton d'accès (JWT) et un jeton de rafraîchissement (aléatoire, stocké haché)."""
+def _issue_tokens(
+    db: Session, user: Utilisateur, settings: Settings, keys: security.JwtKeys, token_id: uuid.UUID | None = None
+) -> TokenPair:
+    """Crée un jeton d'accès (JWT) et un jeton de rafraîchissement (aléatoire, stocké haché).
+
+    `token_id` : identifiant imposé au nouveau jeton de rafraîchissement (la rotation en a besoin pour renseigner
+    `remplace_par` sur l'ancien). La ligne est écrite (flush) tout de suite, pour qu'une clé étrangère puisse la viser."""
     refresh, digest = security.new_refresh_token()
     db.add(
         JetonRafraichissement(
+            id=token_id or uuid.uuid4(),
             utilisateur_id=user.id,
             empreinte=digest,
             expire_le=_now() + timedelta(days=settings.refresh_token_ttl_days),
         )
     )
+    db.flush()
     return TokenPair(
         access_token=keys.sign_access_token(user.id, settings),
         refresh_token=refresh,
@@ -98,8 +106,10 @@ def login(body: Credentials, db: DbDep, settings: SettingsDep, keys: KeysDep) ->
     summary="Renouveler le jeton d'accès",
     description=(
         "Échange un jeton de rafraîchissement contre une **nouvelle paire** de jetons : l'ancien jeton est "
-        "révoqué (rotation). Présenter un jeton déjà utilisé est le signe d'un vol : toutes les sessions "
-        "du compte sont alors révoquées et l'utilisateur doit se reconnecter."
+        "révoqué (rotation). Rejouer un jeton déjà échangé **dans la fenêtre de tolérance** "
+        "(`REFRESH_REUSE_INTERVAL_SECONDS`, 30 s par défaut : réponse perdue, deux appels simultanés) émet une nouvelle "
+        "paire et révoque celle du premier appel, sans toucher aux autres sessions, **à condition que le jeton de "
+        "remplacement n'ait pas encore servi**. **Sinon, ou au-delà**, c'est le signe d'un vol : toutes les sessions du compte sont révoquées et l'utilisateur doit se reconnecter."
     ),
     response_model=TokenPair,
     responses={
@@ -109,12 +119,49 @@ def login(body: Credentials, db: DbDep, settings: SettingsDep, keys: KeysDep) ->
 )
 def refresh(body: RefreshRequest, db: DbDep, settings: SettingsDep, keys: KeysDep) -> TokenPair:
     digest = security.hash_refresh_token(body.refresh_token)
-    # FOR UPDATE : deux requêtes simultanées avec le même jeton sont traitées l'une après l'autre.
-    row = db.scalar(select(JetonRafraichissement).where(JetonRafraichissement.empreinte == digest).with_for_update())
+    owner_id = db.scalar(select(JetonRafraichissement.utilisateur_id).where(JetonRafraichissement.empreinte == digest))
+    if owner_id is None:
+        raise unauthorized("INVALID_REFRESH_TOKEN", "Jeton de rafraîchissement invalide.")
+    # Les refresh d'un même compte passent l'un après l'autre : verrou sur la ligne de l'utilisateur d'abord (NO KEY
+    # UPDATE : il ne bloque pas les insertions des tables qui le référencent), puis sur le jeton. Un ordre unique
+    # évite les interblocages entre un rejeu toléré, une rotation et une purge.
+    db.execute(select(Utilisateur.id).where(Utilisateur.id == owner_id).with_for_update(key_share=True))
+    row = db.scalar(
+        select(JetonRafraichissement)
+        .where(JetonRafraichissement.empreinte == digest)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if row is None:
         raise unauthorized("INVALID_REFRESH_TOKEN", "Jeton de rafraîchissement invalide.")
     now = _now()
     if row.revoque_le is not None:
+        window = timedelta(seconds=settings.refresh_reuse_interval_seconds)
+        # Tolérance : jeton révoqué par ROTATION (remplace_par renseigné), encore dans la fenêtre, non expiré,
+        # ET dont le successeur DIRECT est encore actif, c'est-à-dire n'a jamais servi. Si le successeur a déjà été
+        # échangé, quelqu'un d'autre détient la suite de la chaîne : c'est un vol, pas une réponse perdue.
+        # Un jeton révoqué par purge (remplace_par NULL) n'est jamais toléré.
+        successor = None
+        if row.remplace_par is not None and row.expire_le > now and now - row.revoque_le <= window:
+            successor = db.get(JetonRafraichissement, row.remplace_par, with_for_update=True)
+            if successor is not None and successor.revoque_le is not None:
+                successor = None
+        if successor is not None:
+            user = db.get(Utilisateur, row.utilisateur_id)
+            new_id = uuid.uuid4()
+            tokens = _issue_tokens(db, user, settings, keys, token_id=new_id)
+            # Tous les jetons qui visaient le successeur remplacé (rejeux déjà tolérés) visent désormais le nouveau.
+            db.execute(
+                update(JetonRafraichissement)
+                .where(JetonRafraichissement.remplace_par == successor.id)
+                .values(remplace_par=new_id)
+                .execution_options(synchronize_session="fetch")
+            )
+            successor.revoque_le = now  # la paire du premier appel est remplacée par celle-ci
+            successor.remplace_par = new_id
+            db.commit()
+            log.info("refresh token replay tolerated", extra={"userId": str(row.utilisateur_id)})
+            return tokens
         db.execute(
             update(JetonRafraichissement)
             .where(JetonRafraichissement.utilisateur_id == row.utilisateur_id, JetonRafraichissement.revoque_le.is_(None))
@@ -126,7 +173,9 @@ def refresh(body: RefreshRequest, db: DbDep, settings: SettingsDep, keys: KeysDe
     if row.expire_le <= now:
         raise unauthorized("REFRESH_TOKEN_EXPIRED", "Jeton de rafraîchissement expiré : reconnectez-vous.")
     user = db.get(Utilisateur, row.utilisateur_id)
+    new_id = uuid.uuid4()
+    tokens = _issue_tokens(db, user, settings, keys, token_id=new_id)
     row.revoque_le = now
-    tokens = _issue_tokens(db, user, settings, keys)
+    row.remplace_par = new_id  # rotation : cet ancien jeton est « remplacé », donc tolérable un court instant
     db.commit()
     return tokens

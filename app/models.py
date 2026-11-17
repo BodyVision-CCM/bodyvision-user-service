@@ -84,7 +84,11 @@ class JetonRafraichissement(Base):
     __table_args__ = (
         UniqueConstraint("empreinte", name="jeton_rafraichissement_empreinte_key"),
         CheckConstraint("expire_le > cree_le", name="jeton_rafraichissement_check"),
+        CheckConstraint("remplace_par IS NULL OR revoque_le IS NOT NULL", name="jeton_rafraichissement_remplace_par_check"),
         Index("jeton_rafraichissement_utilisateur_idx", "utilisateur_id"),
+        Index(
+            "jeton_rafraichissement_remplace_par_idx", "remplace_par", postgresql_where=text("remplace_par IS NOT NULL")
+        ),
         {"comment": "Jetons de rafraîchissement (empreinte seulement), révocables."},
     )
 
@@ -94,3 +98,9 @@ class JetonRafraichissement(Base):
     cree_le: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expire_le: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoque_le: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Jeton successeur si celui-ci a été révoqué par ROTATION. NULL = actif, ou révoqué par PURGE (vol détecté).
+    remplace_par: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey(f"{SCHEMA}.jeton_rafraichissement.id", ondelete="SET NULL"),
+        comment="Jeton successeur si celui-ci a été révoqué par rotation ; NULL sinon (actif, ou révoqué par purge).",
+    )
