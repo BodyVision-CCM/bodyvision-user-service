@@ -2,7 +2,7 @@
 
 Équivalent exact du DDL de référence du ticket de modélisation (db/10_utilisateurs.sql).
 Le schéma lui-même et le rôle propriétaire sont créés avant, par l'administrateur
-(dépôt infra-compose : postgres/init/00_roles_schemas.sh) : le service n'a pas le droit de créer un schéma.
+(dépôt https://github.com/BodyVision-CCM/bodyvision-infra-compose : postgres/init/00_roles_schemas.sh) : le service n'a pas le droit de créer un schéma.
 
 Revision ID: 0001
 Revises:

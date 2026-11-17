@@ -171,13 +171,25 @@ def test_window_of_zero_disables_the_tolerance(client, user, settings, monkeypat
     assert r.json()["code"] == "REFRESH_TOKEN_REUSED"
 
 
-def test_successive_replays_follow_the_chain_to_the_active_token(client, user):
+def test_successive_replays_inside_the_window_keep_working(client, user):
     _refresh(client, user.refresh)
-    r1 = _refresh(client, user.refresh)  # rejeu 1 : remplace la paire du premier appel
-    r2 = _refresh(client, user.refresh)  # rejeu 2 : remplace celle du rejeu 1
-    assert r1.status_code == r2.status_code == 200
-    assert _refresh(client, r1.json()["refreshToken"]).status_code == 200  # lui-même rejouable dans la fenêtre
-    assert _refresh(client, r2.json()["refreshToken"]).status_code == 200
+    replays = [_refresh(client, user.refresh) for _ in range(6)]  # plus aucune limite de « sauts » dans une chaîne
+    assert [r.status_code for r in replays] == [200] * 6
+    # un jeton d'un rejeu précédent a été redirigé vers le successeur actif : il reste toléré
+    assert _refresh(client, replays[0].json()["refreshToken"]).status_code == 200
+
+
+def test_replay_is_refused_once_the_successor_has_been_used(client, user):
+    """Vol : T1 copié ; le vrai client fait T1 -> T2 puis T2 -> T3 ; le voleur rejoue T1 dans la fenêtre."""
+    other = _login(client, user)
+    t2 = _refresh(client, user.refresh).json()
+    t3 = _refresh(client, t2["refreshToken"]).json()
+    replay = _refresh(client, user.refresh)
+    assert replay.status_code == 401
+    assert replay.json()["code"] == "REFRESH_TOKEN_REUSED"
+    # purge : y compris le jeton du vrai client et l'autre session
+    assert _refresh(client, t3["refreshToken"]).status_code == 401
+    assert _refresh(client, other["refreshToken"]).status_code == 401
 
 
 def test_expired_token_is_not_tolerated_even_inside_the_window(client, db, user):
@@ -193,19 +205,44 @@ def test_expired_token_is_not_tolerated_even_inside_the_window(client, db, user)
     assert _refresh(client, user.refresh).json()["code"] == "REFRESH_TOKEN_REUSED"
 
 
-def test_concurrent_refreshes_with_the_same_token_do_not_purge_the_account(client, user):
+def _active_tokens(db, user) -> int:
+    return db.execute(
+        text(
+            "SELECT count(*) FROM utilisateurs.jeton_rafraichissement WHERE revoque_le IS NULL AND utilisateur_id = "
+            "(SELECT utilisateur_id FROM utilisateurs.jeton_rafraichissement WHERE empreinte = :d)"
+        ),
+        {"d": _digest(user.refresh)},
+    ).scalar_one()
+
+
+def test_concurrent_refreshes_with_the_same_token_do_not_purge_the_account(client, db, user, monkeypatch):
     other = _login(client, user)
+    # Chevauchement forcé : chaque requête, une fois son jeton LU (et verrouillé, s'il y a un verrou), attend l'autre
+    # avant de continuer. Sans verrou, les deux voient T1 actif : deux sessions naissent d'un seul jeton. Avec le
+    # verrou, la seconde requête est bloquée en amont : la barrière expire (1 s) et la première poursuit seule.
+    from app.routers import auth as auth_router
+
     barrier = threading.Barrier(2)
+    seen = threading.local()  # seule la première lecture de l'heure de chaque requête se synchronise
+    real_now = auth_router._now
 
-    def call(_):
-        barrier.wait()
-        return _refresh(client, user.refresh)
+    def synced_now():
+        if not getattr(seen, "done", False):
+            seen.done = True
+            try:
+                barrier.wait(timeout=1)
+            except threading.BrokenBarrierError:
+                pass
+        return real_now()
 
+    monkeypatch.setattr(auth_router, "_now", synced_now)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(call, range(2)))
-    assert [r.status_code for r in results] == [200, 200]
-    # aucune purge : la dernière paire émise et l'autre session fonctionnent
-    assert all(_refresh(client, r.json()["refreshToken"]).status_code == 200 for r in results)
+        results = list(pool.map(lambda _: _refresh(client, user.refresh), range(2)))
+    monkeypatch.undo()
+
+    assert sorted(r.status_code for r in results) == [200, 200]
+    # exactement 2 jetons actifs : la session `other` + une seule issue de T1 (celle du premier appel est révoquée)
+    assert _active_tokens(db, user) == 2
     assert _refresh(client, other["refreshToken"]).status_code == 200
 
 

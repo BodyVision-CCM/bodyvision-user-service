@@ -4,7 +4,7 @@ Comptes, authentification JWT, profil et morphologie. **FastAPI + PostgreSQL**, 
 il se teste, se construit et se déploie seul. Pour le lancer **avec les autres services**, voir le dépôt
 https://github.com/BodyVision-CCM/bodyvision-infra-compose (cloné à côté de celui-ci ; `make db` y suffit pour avoir PostgreSQL seul).
 
-Implémente les routes `auth`, `users`, `internal`, ainsi que les sondes et le JWKS (hors `/v1`), du contrat OpenAPI v0.4.
+Implémente les routes `auth`, `users`, `internal`, ainsi que les sondes et le JWKS (hors `/v1`), du contrat OpenAPI v0.4.2 (les sondes et le JWKS en font partie depuis la v0.4.1).
 
 | Route | Rôle |
 |---|---|
@@ -27,8 +27,9 @@ Implémente les routes `auth`, `users`, `internal`, ainsi que les sondes et le J
   Présenter un jeton déjà utilisé est traité comme un vol : **toutes les sessions du compte sont révoquées**.
   Exception : une **fenêtre de tolérance au rejeu** (`REFRESH_REUSE_INTERVAL_SECONDS`, 30 s par défaut, 0 pour la
   désactiver) accepte un jeton tout juste échangé par rotation (réponse perdue, deux appels simultanés) : une nouvelle
-  paire est émise, celle du premier appel est révoquée, les autres sessions ne sont pas touchées. Un jeton révoqué
-  par purge n'est jamais toléré.
+  paire est émise, celle du premier appel est révoquée, les autres sessions ne sont pas touchées. Ce n'est toléré
+  que si le **successeur direct du jeton n'a jamais servi** : s'il a déjà été échangé, quelqu'un d'autre détient la
+  suite et le rejeu est traité comme un vol (purge). Un jeton révoqué par purge n'est jamais toléré.
 - Clé de signature en fichier `0600` ; conteneur non-root.
 - Erreurs au format du contrat `{ code, message, traceId }` ; `traceId` aussi dans `X-Request-ID` et les logs JSON.
 - Le rôle SQL du service n'a accès qu'au schéma `utilisateurs`.
@@ -82,4 +83,25 @@ variables obligatoires). Le service refuse de démarrer sans `DB_PASSWORD` ni `I
 `RUN_MIGRATIONS=false` dès qu'il y a plusieurs réplicas, avec un job qui lance `alembic upgrade head` ;
 sondes sur `/healthz` (vivant) et `/readyz` (prêt).
 
+## Scan de sécurité
 
+Deux contrôles, à relancer à chaque changement de dépendances (installer `pip-audit` et `bandit`, hors `requirements.txt`) :
+
+```bash
+pip-audit -r requirements.txt   # vulnérabilités connues des dépendances
+bandit -r app                   # analyse statique du code du service
+```
+
+Dernier passage (17 nov. 2026) : `pip-audit` ne signale aucune vulnérabilité connue, `bandit` aucun problème
+(0 faible, 0 moyen, 0 élevé).
+
+## Limites connues
+
+- **Deux refresh simultanés avec le même jeton** : le premier obtient T2, le second T3 et révoque T2. Si le client garde
+  T2, il est déconnecté au refresh suivant (au bout d'environ 15 min, hors fenêtre). C'est la conséquence de « révoquer la
+  paire du premier appel » ; la parade (un seul refresh à la fois) est côté mobile.
+- **Pas de limitation du nombre de tentatives** sur `login` et `register` (force brute).
+- **Pas de déconnexion**, de réinitialisation de mot de passe ni de vérification d'e-mail (absents du contrat v0.4.2).
+- **Une seule clé de signature** dans le JWKS : pas de rotation sans interruption.
+- `INTERNAL_SERVICE_TOKEN` est un secret partagé simple ; à durcir (mTLS, politique réseau).
+- Un jeton d'accès reste valide jusqu'à son expiration (≤ 15 min), même après révocation des sessions.

@@ -1,5 +1,5 @@
 # Raccourcis du dépôt Auth. `make help` liste les commandes.
-# Pour lancer TOUS les services ensemble, voir le dépôt infra-compose (frère de ce dépôt).
+# Pour lancer TOUS les services ensemble, voir le dépôt https://github.com/BodyVision-CCM/bodyvision-infra-compose, cloné à côté de ce dépôt.
 
 .DEFAULT_GOAL := help
 .PHONY: help test build

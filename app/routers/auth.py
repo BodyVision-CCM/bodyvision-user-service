@@ -100,27 +100,6 @@ def login(body: Credentials, db: DbDep, settings: SettingsDep, keys: KeysDep) ->
     return tokens
 
 
-MAX_SUCCESSOR_HOPS = 5  # profondeur maximale de la chaîne de rotations suivie lors d'un rejeu toléré
-
-
-def _active_successor(db: Session, row: JetonRafraichissement) -> JetonRafraichissement | None:
-    """Suit la chaîne des rotations (jeton -> successeur -> ...) jusqu'au jeton encore actif, et le verrouille.
-
-    Renvoie None si la chaîne s'arrête sur un jeton révoqué par purge, ou a disparu : ce n'est alors plus une simple
-    rotation, la famille a été révoquée et le rejeu doit être traité comme un vol."""
-    current = row
-    for _ in range(MAX_SUCCESSOR_HOPS):
-        if current.remplace_par is None:
-            return None
-        nxt = db.get(JetonRafraichissement, current.remplace_par, with_for_update=True)
-        if nxt is None:
-            return None
-        if nxt.revoque_le is None:
-            return nxt
-        current = nxt
-    return None
-
-
 @router.post(
     "/refresh",
     operation_id="refreshToken",
@@ -129,8 +108,8 @@ def _active_successor(db: Session, row: JetonRafraichissement) -> JetonRafraichi
         "Échange un jeton de rafraîchissement contre une **nouvelle paire** de jetons : l'ancien jeton est "
         "révoqué (rotation). Rejouer un jeton déjà échangé **dans la fenêtre de tolérance** "
         "(`REFRESH_REUSE_INTERVAL_SECONDS`, 30 s par défaut : réponse perdue, deux appels simultanés) émet une nouvelle "
-        "paire et révoque celle du premier appel, sans toucher aux autres sessions. **Au-delà**, c'est le signe d'un "
-        "vol : toutes les sessions du compte sont révoquées et l'utilisateur doit se reconnecter."
+        "paire et révoque celle du premier appel, sans toucher aux autres sessions, **à condition que le jeton de "
+        "remplacement n'ait pas encore servi**. **Sinon, ou au-delà**, c'est le signe d'un vol : toutes les sessions du compte sont révoquées et l'utilisateur doit se reconnecter."
     ),
     response_model=TokenPair,
     responses={
@@ -140,21 +119,44 @@ def _active_successor(db: Session, row: JetonRafraichissement) -> JetonRafraichi
 )
 def refresh(body: RefreshRequest, db: DbDep, settings: SettingsDep, keys: KeysDep) -> TokenPair:
     digest = security.hash_refresh_token(body.refresh_token)
-    # FOR UPDATE : deux requêtes simultanées avec le même jeton sont traitées l'une après l'autre.
-    row = db.scalar(select(JetonRafraichissement).where(JetonRafraichissement.empreinte == digest).with_for_update())
+    owner_id = db.scalar(select(JetonRafraichissement.utilisateur_id).where(JetonRafraichissement.empreinte == digest))
+    if owner_id is None:
+        raise unauthorized("INVALID_REFRESH_TOKEN", "Jeton de rafraîchissement invalide.")
+    # Les refresh d'un même compte passent l'un après l'autre : verrou sur la ligne de l'utilisateur d'abord (NO KEY
+    # UPDATE : il ne bloque pas les insertions des tables qui le référencent), puis sur le jeton. Un ordre unique
+    # évite les interblocages entre un rejeu toléré, une rotation et une purge.
+    db.execute(select(Utilisateur.id).where(Utilisateur.id == owner_id).with_for_update(key_share=True))
+    row = db.scalar(
+        select(JetonRafraichissement)
+        .where(JetonRafraichissement.empreinte == digest)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if row is None:
         raise unauthorized("INVALID_REFRESH_TOKEN", "Jeton de rafraîchissement invalide.")
     now = _now()
     if row.revoque_le is not None:
         window = timedelta(seconds=settings.refresh_reuse_interval_seconds)
-        # Tolérance : jeton révoqué par ROTATION (remplace_par renseigné), encore dans la fenêtre, non expiré.
+        # Tolérance : jeton révoqué par ROTATION (remplace_par renseigné), encore dans la fenêtre, non expiré,
+        # ET dont le successeur DIRECT est encore actif, c'est-à-dire n'a jamais servi. Si le successeur a déjà été
+        # échangé, quelqu'un d'autre détient la suite de la chaîne : c'est un vol, pas une réponse perdue.
         # Un jeton révoqué par purge (remplace_par NULL) n'est jamais toléré.
-        within_window = row.remplace_par is not None and row.expire_le > now and now - row.revoque_le <= window
-        successor = _active_successor(db, row) if within_window else None
+        successor = None
+        if row.remplace_par is not None and row.expire_le > now and now - row.revoque_le <= window:
+            successor = db.get(JetonRafraichissement, row.remplace_par, with_for_update=True)
+            if successor is not None and successor.revoque_le is not None:
+                successor = None
         if successor is not None:
             user = db.get(Utilisateur, row.utilisateur_id)
             new_id = uuid.uuid4()
             tokens = _issue_tokens(db, user, settings, keys, token_id=new_id)
+            # Tous les jetons qui visaient le successeur remplacé (rejeux déjà tolérés) visent désormais le nouveau.
+            db.execute(
+                update(JetonRafraichissement)
+                .where(JetonRafraichissement.remplace_par == successor.id)
+                .values(remplace_par=new_id)
+                .execution_options(synchronize_session="fetch")
+            )
             successor.revoque_le = now  # la paire du premier appel est remplacée par celle-ci
             successor.remplace_par = new_id
             db.commit()

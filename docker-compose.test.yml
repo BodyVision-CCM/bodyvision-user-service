@@ -1,13 +1,13 @@
 # =============================================================================
-# Tests du service Auth, AUTONOMES : ce dépôt n'a pas besoin du dépôt infra-compose pour être testé
+# Tests du service Auth, AUTONOMES : ce dépôt n'a pas besoin du dépôt https://github.com/BodyVision-CCM/bodyvision-infra-compose pour être testé
 # (c'est ce qui permet de les lancer à l'identique en CI, ex. Cloud Build).
 #
 #   make test
 #
 # PostgreSQL est JETABLE : données en mémoire (tmpfs), aucun port publié, détruit à la fin.
 # Les identifiants ci-dessous sont FACTICES et réservés à ce test : ne les réutilisez jamais ailleurs.
-# Le rôle et le schéma sont recréés par docker/test-db-init.sql, comme le fait le dépôt infra-compose
-# (source de vérité pour l'instance partagée : infra-compose/postgres/init/).
+# Le rôle et le schéma sont recréés par docker/test-db-init.sql, comme le fait le dépôt https://github.com/BodyVision-CCM/bodyvision-infra-compose
+# (https://github.com/BodyVision-CCM/bodyvision-infra-compose, source de vérité pour l'instance partagée : postgres/init/).
 # =============================================================================
 
 name: auth-tests
@@ -45,4 +45,6 @@ services:
       DB_NAME: bodyvision
       DB_USER: bv_utilisateurs
       DB_PASSWORD: test-only-service-password
+      # Facultatif pour pytest (conftest en pose un), mais requis par la configuration dès qu'Alembic ou
+      # l'application démarrent : valeur factice, réservée à ce test.
       INTERNAL_SERVICE_TOKEN: test-only-internal-token-0123456789
