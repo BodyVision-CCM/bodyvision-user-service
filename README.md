@@ -85,7 +85,11 @@ sondes sur `/healthz` (vivant) et `/readyz` (prêt).
 
 ## Scan de sécurité
 
-Deux contrôles, à relancer à chaque changement de dépendances (installer `pip-audit` et `bandit`, hors `requirements.txt`) :
+Le workflow `.github/workflows/security.yml` construit l’image de production (`runtime`)
+et la scanne avec Trivy sur chaque Pull Request et sur `main`. Toute vulnérabilité
+`CRITICAL` bloque le job, même sans correctif disponible. L’image reste sur le runner.
+
+En complément, deux contrôles à lancer à la main à chaque changement de dépendances (installer `pip-audit` et `bandit`, hors `requirements.txt`) :
 
 ```bash
 pip-audit -r requirements.txt   # vulnérabilités connues des dépendances
